@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Proyector Air Control</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#070d16;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.app{max-width:1000px;margin:auto;padding:16px}
+h1{font-size:25px;margin:0 0 4px}
+.sub{color:#aab8ca;margin:0 0 14px}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+input,button{font:inherit;border-radius:10px;border:1px solid #314158;padding:11px 13px}
+input{background:#101a29;color:#fff;min-width:240px;flex:1}
+button{background:#55d6ff;color:#06111a;font-weight:700;border:0;min-height:44px}
+button.secondary{background:#172438;color:#dce7f5;border:1px solid #314158}
+.videoBox{position:relative;background:#000;border-radius:18px;overflow:hidden;aspect-ratio:16/9}
+#player{position:absolute;inset:0;width:100%;height:100%}
+#hiddenMsg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:#000;font-size:25px}
+.cameraBox{margin-top:12px;display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:12px}
+.preview{position:relative;background:#02060b;border:1px solid #26364e;border-radius:16px;overflow:hidden;aspect-ratio:16/10}
+#cam{position:absolute;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+#handCanvas{position:absolute;inset:0;width:100%;height:100%;transform:scaleX(-1)}
+.side{background:#101a29;border:1px solid #26364e;border-radius:16px;padding:14px}
+.status{font-weight:800;font-size:17px;margin-bottom:8px}
+.gesture{font-size:26px;margin:8px 0}
+.help{color:#aab8ca;font-size:14px;line-height:1.45}
+.help b{color:#fff}
+#startCam{width:100%;margin-top:10px}
+@media(max-width:700px){.cameraBox{grid-template-columns:1fr}.side{order:-1}}
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>🖐️ Proyector Air Control</h1>
+  <p class="sub">Controla un video de YouTube con gestos, sin tocar la pantalla.</p>
+
+  <div class="controls">
+    <input id="url" placeholder="Pega aquí el enlace de YouTube">
+    <button id="load">Cargar video</button>
+    <button id="show" class="secondary">Mostrar video</button>
+  </div>
+
+  <div class="videoBox" id="videoBox">
+    <div id="player"></div>
+    <div id="hiddenMsg">👻 Video oculto — mano ↑ para volver a mostrarlo</div>
+  </div>
+
+  <div class="cameraBox">
+    <div class="preview">
+      <video id="cam" playsinline autoplay muted></video>
+      <canvas id="handCanvas"></canvas>
+    </div>
+    <div class="side">
+      <div class="status" id="status">Cámara apagada</div>
+      <div class="gesture" id="gesture">—</div>
+      <div class="help">
+        <b>✊ Puño:</b> pausa / reproduce<br>
+        <b>👉 Derecha:</b> +10 segundos<br>
+        <b>👈 Izquierda:</b> −10 segundos<br>
+        <b>☝️ Arriba:</b> oculta el video<br><br>
+        El gesto debe terminar y volver a una posición neutra antes de repetirlo.
+      </div>
+      <button id="startCam">Activar cámara</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+<script>
+let player=null, playerReady=false, camera=null, running=false;
+let lastGesture="neutral", gestureCooldown=0, neutralSince=0, lastX=null, lastY=null, motionStart=null;
+const $=id=>document.getElementById(id);
+const cam=$("cam"), canvas=$("handCanvas"), ctx=canvas.getContext("2d");
+
+function videoId(value){
+  try{
+    const u=new URL(value.trim());
+    if(u.hostname.includes("youtu.be")) return u.pathname.slice(1).split("/")[0];
+    if(u.hostname.includes("youtube.com")){
+      if(u.pathname==="/watch") return u.searchParams.get("v");
+      if(u.pathname.startsWith("/shorts/")) return u.pathname.split("/")[2];
+      if(u.pathname.startsWith("/embed/")) return u.pathname.split("/")[2];
+    }
+  }catch(e){}
+  return null;
+}
+function loadVideo(){
+  const id=videoId($("url").value);
+  if(!id){$("status").textContent="⚠️ Pega un enlace de YouTube válido";return}
+  if(!player){
+    window.pendingVideo=id;
+    $("status").textContent="Cargando reproductor…";
+  }else{
+    player.loadVideoById(id);
+    playerReady=true;
+    showVideo();
+  }
+}
+window.onYouTubeIframeAPIReady=function(){
+  player=new YT.Player("player",{
+    width:"100%",height:"100%",
+    videoId:window.pendingVideo||"",
+    playerVars:{playsinline:1,controls:1,rel:0},
+    events:{onReady:()=>{playerReady=true;if(window.pendingVideo)showVideo();}}
+  });
+};
+function showVideo(){
+  $("videoBox").classList.remove("hidden");
+  $("hiddenMsg").style.display="none";
+  $("player").style.display="block";
+}
+function hideVideo(){
+  $("player").style.display="none";
+  $("hiddenMsg").style.display="flex";
+}
+$("load").addEventListener("click",loadVideo);
+$("show").addEventListener("click",showVideo);
+
+function resizeCanvas(){
+  const r=cam.getBoundingClientRect();
+  canvas.width=Math.max(1,Math.floor(r.width*devicePixelRatio));
+  canvas.height=Math.max(1,Math.floor(r.height*devicePixelRatio));
+}
+window.addEventListener("resize",resizeCanvas);
+
+const hands=new Hands({locateFile:file=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+hands.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:.65,minTrackingConfidence:.65});
+
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+function isFist(lm){
+  const wrist=lm[0];
+  const tips=[8,12,16,20], pips=[6,10,14,18];
+  let folded=0;
+  for(let i=0;i<4;i++) if(dist(lm[tips[i]],wrist)<dist(lm[pips[i]],wrist)*1.08) folded++;
+  return folded>=3;
+}
+function fingersUp(lm){
+  return [8,12,16,20].filter(i=>dist(lm[i],lm[0])>dist(lm[i-2],lm[0])*1.05).length;
+}
+function trigger(g){
+  const now=performance.now();
+  if(now<gestureCooldown)return;
+  gestureCooldown=now+900;
+  if(!playerReady)return;
+  if(g==="fist"){
+    const s=player.getPlayerState();
+    if(s===YT.PlayerState.PLAYING)player.pauseVideo();
+    else player.playVideo();
+  }else if(g==="right"){
+    player.seekTo(Math.min(player.getDuration(),player.getCurrentTime()+10),true);
+  }else if(g==="left"){
+    player.seekTo(Math.max(0,player.getCurrentTime()-10),true);
+  }else if(g==="up"){
+    hideVideo();
+  }
+}
+hands.onResults(res=>{
+  resizeCanvas();
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(!res.multiHandLandmarks?.length){
+    $("status").textContent="🖐️ No veo tu mano";
+    $("gesture").textContent="—";
+    lastGesture="neutral";
+    lastX=null;lastY=null;motionStart=null;
+    return;
+  }
+  const lm=res.multiHandLandmarks[0];
+  drawConnectors(ctx,lm,HAND_CONNECTIONS,{color:"#fff",lineWidth:3*devicePixelRatio});
+  drawLandmarks(ctx,lm,{color:"#55d6ff",lineWidth:1,radius:4*devicePixelRatio});
+  const x=lm[9].x,y=lm[9].y;
+  const fist=isFist(lm);
+  const up=fingersUp(lm)>=1 && lm[8].y<lm[6].y && lm[12].y>lm[10].y && lm[16].y>lm[14].y && lm[20].y>lm[18].y;
+  let g="neutral";
+  if(fist) g="fist";
+  if(lastX!==null){
+    const dx=x-lastX,dy=y-lastY;
+    if(!motionStart && (Math.abs(dx)>0.025 || Math.abs(dy)>0.025)) motionStart={x:lastX,y:lastY,t:performance.now()};
+    if(motionStart){
+      const sx=x-motionStart.x, sy=y-motionStart.y;
+      const dt=performance.now()-motionStart.t;
+      if(dt<900 && Math.abs(sx)>.18 && Math.abs(sx)>Math.abs(sy)*1.25) g=sx>0?"left":"right";
+      else if(dt<900 && sy<-.18 && Math.abs(sy)>Math.abs(sx)*1.2) g="up";
+      if(g!=="neutral"){trigger(g);motionStart=null}
+      else if(dt>900)motionStart=null;
+    }
+  }
+  if(g==="neutral" && !fist) neutralSince=performance.now();
+  if(g!==lastGesture){
+    if(g!=="neutral" || performance.now()-neutralSince>500){
+      $("gesture").textContent={fist:"✊ PUÑO",right:"👉 DERECHA +10s",left:"👈 IZQUIERDA −10s",up:"☝️ ARRIBA",neutral:"—"}[g];
+      lastGesture=g;
+    }
+  }
+  $("status").textContent="✅ Mano detectada";
+  lastX=x;lastY=y;
+});
+$("startCam").addEventListener("click",async()=>{
+  if(running)return;
+  if(!navigator.mediaDevices?.getUserMedia){
+    $("status").textContent="❌ Este navegador no permite cámara aquí";
+    return;
+  }
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:{ideal:1280},height:{ideal:720}},audio:false});
+    cam.srcObject=stream;
+    await cam.play();
+    resizeCanvas();
+    camera=new Camera(cam,{onFrame:async()=>{if(running)await hands.send({image:cam})},width:1280,height:720});
+    running=true; camera.start();
+    $("startCam").disabled=true;
+    $("startCam").textContent="Cámara activa";
+  }catch(e){
+    $("status").textContent="❌ Permiso de cámara rechazado";
+  }
+});
+</script>
+</body>
+</html>
